@@ -43,7 +43,7 @@ pub fn spawn_sun(commands: &mut Commands) {
         DirectionalLight {
             illuminance: 40_000.0,
             color: Color::srgb(1.0, 0.96, 0.88),
-            shadows_enabled: true,
+            shadow_maps_enabled: true,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -1.0, -0.6, -0.2)),
@@ -62,7 +62,7 @@ pub fn spawn_camera_at(commands: &mut Commands, eye: Vec3, look_at: Vec3) {
     commands.spawn((
         Camera3d::default(),
         Transform::from_translation(eye).looking_at(look_at, Vec3::Y),
-        bevy::render::view::Hdr,
+        bevy::camera::Hdr,
     ));
 }
 

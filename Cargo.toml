@@ -37,7 +37,7 @@ name = "car_crash"
 path = "src/cases/car_crash.rs"
 
 [dependencies]
-bevy = { version = "0.18", default-features = true }
+bevy = { version = "0.19", default-features = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
