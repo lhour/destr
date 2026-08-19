@@ -65,6 +65,23 @@ pub trait Element: Default + Copy + Clone + Send + Sync + 'static {
     /// 三档调色板（亮/中/暗），16 进制 sRGB，带透明通道无效。
     const PALETTE: [u32; 3];
 
+    /// 抗冲击强度（单位：N·s / kg，越大越难撞碎）。
+    ///
+    /// 冲击力按 `0.5 × 质量 × |速度|²`（动能）估算，
+    /// 超过 `IMPACT_RESISTANCE` 就认为被击碎。
+    ///   - 100 = 手捏就碎
+    ///   - 500 = 正常扔石头能碎（标准砖）
+    ///   - 1500+ = 得重锤/炮弹才碎
+    const IMPACT_RESISTANCE: f32;
+
+    /// 单块元素的参考质量（kg），用于冲击力 / 碰撞交换动量。
+    ///
+    /// 默认按"尺寸体积 × 密度"估算：
+    ///   - 砖/水泥 ~ 2200 kg/m³
+    ///   - 石块 ~ 2600 kg/m³
+    ///   - 碎砖 ~ 2000 kg/m³（略小，因为有空隙）
+    const MASS: f32;
+
     // ---- 派生尺寸：实例方法，`element.get_length().x` 风格 ----
 
     /// 全尺寸向量（等价于 `Self::SIZE`）。
@@ -184,6 +201,11 @@ impl Element for Brick {
     const NAME: &'static str = "Brick";
     // 三档灰石色（和原墙 case 保持一致，重构零变化）
     const PALETTE: [u32; 3] = [0xb9b5a8, 0x9a968a, 0x6f6b62];
+    // 标准建筑砖：扔一块 0.5kg 石头 10 m/s 能碎，4.5 m/s 以上才碎（常见力度）
+    const IMPACT_RESISTANCE: f32 = 520.0;
+    // 1.0×0.5×0.6 × 2200 = 660 kg？不对——这是游戏里缩放后的米，现实砖约 2.5 kg，
+    // 直接写 2.5 作为"体感质量"即可，冲击力判定用它。
+    const MASS: f32 = 2.5;
 
     fn default_image() -> Image { brick_texture() }
 }
@@ -205,6 +227,9 @@ impl Element for CementBlock {
     const NAME: &'static str = "CementBlock";
     // 冷灰三档（水泥本色偏蓝灰）
     const PALETTE: [u32; 3] = [0xb9bfc4, 0x8d949b, 0x5e656c];
+    // 混凝土比砖硬 2.5× 左右，得重锤才碎
+    const IMPACT_RESISTANCE: f32 = 1300.0;
+    const MASS: f32 = 3.8;
 
     fn default_image() -> Image { cement_texture() }
 }
@@ -227,6 +252,10 @@ impl Element for DebrisPiece {
     const NAME: &'static str = "DebrisPiece";
     // 偏脏的中灰色（碎片颜色偏一致，不然太跳）
     const PALETTE: [u32; 3] = [0xa5a195, 0x85817a, 0x66625c];
+    // 碎砖很脆：几乎碰一下就再碎，阈值设得低
+    const IMPACT_RESISTANCE: f32 = 160.0;
+    // 小碎砖 0.15 kg（体感值，不是按体积密度真算）
+    const MASS: f32 = 0.15;
 
     // ✅ 用户要求"碎砖不该有边框"：不再复用 brick_texture（带灰缝），改用 debris_texture（纯噪点）
     fn default_image() -> Image { debris_texture() }
@@ -582,6 +611,11 @@ impl Element for IrregularRock {
     const NAME: &'static str = "IrregularRock";
     // 冷灰岩石三档
     const PALETTE: [u32; 3] = [0x9da6ae, 0x6f7880, 0x4a5258];
+    // 天然石块很硬，做投掷物时"撞碎别人自己不碎"
+    const IMPACT_RESISTANCE: f32 = 3200.0;
+    // 一块拳头大的河卵石体感 3.5 kg，保证 25 m/s 扔出去能砸砖
+    // （0.5 × 3.5 × 25² ≈ 1094 J >> Brick::IMPACT_RESISTANCE=520）
+    const MASS: f32 = 3.5;
 
     fn base_mesh() -> Mesh { irregular_rock_mesh(Self::SIZE, 0) }
     fn default_image() -> Image { rock_texture() }
@@ -617,6 +651,9 @@ impl Element for ArchBrick {
     const NAME: &'static str = "ArchBrick";
     // 带暖调的橙黄砂砖（拱门常见）
     const PALETTE: [u32; 3] = [0xd9b47a, 0xb99060, 0x8a6a44];
+    // 拱圈用的楔形砖，硬度和普通砖相当
+    const IMPACT_RESISTANCE: f32 = 580.0;
+    const MASS: f32 = 3.0;
 
     fn base_mesh() -> Mesh {
         arch_brick_mesh(Self::R_OUTER, Self::THICK, Self::ARC_RAD, Self::HEIGHT, Self::SLICES)
@@ -666,6 +703,10 @@ impl Element for CurvedCylinderTrunk {
     const NAME: &'static str = "CurvedCylinderTrunk";
     // 树皮棕褐色三档
     const PALETTE: [u32; 3] = [0x7a5c3f, 0x5c4430, 0x3f2f22];
+    // 木头抗冲击一般，扔石头能砸断小树枝但树干得斧子
+    const IMPACT_RESISTANCE: f32 = 900.0;
+    // 一棵树 3 米高的原木约 25 kg
+    const MASS: f32 = 25.0;
 
     fn base_mesh() -> Mesh {
         curved_trunk_mesh(
