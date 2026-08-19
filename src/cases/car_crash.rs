@@ -474,81 +474,106 @@ fn spawn_car(
         .translated_by(Vec3::new(0.0, CAR_HALF_H + CAR_HALF_H * 0.52, -1.75));
     shell_parts.push((trunk_mesh, hex4(part_profile(Part::Trunk).2)));
 
-    // ⑤ 弧形车顶（3 根平行横梁 + 1 片顶面）————————————————
-    // 顶面用"扁平 Cylinder 切薄片"近似弧：Cylinder::new(顶长/2, 车宽) 然后切上半部分
-    // 简化：5 个薄 Cuboid 沿车顶弧线排列，Y 按抛物线拱起
-    let roof_segments = 7;
-    let roof_front_z = 0.0;
-    let roof_rear_z = -1.55;
-    let roof_max_y = CAR_HALF_H + CAR_HALF_H * 1.32;  // = 0.55 + 0.726 = 1.276 m
-    let roof_edge_y = CAR_HALF_H + CAR_HALF_H * 0.85;  // 前后端 y（前风挡上缘、后玻璃上缘）
-    for i in 0..roof_segments {
-        let t = i as f32 / (roof_segments - 1) as f32;
-        let z = roof_front_z + (roof_rear_z - roof_front_z) * t;
-        // 抛物线 y：t=0 和 t=1 时 y=roof_edge_y；t=0.5 时 y=roof_max_y
-        let y_parabolic = roof_edge_y + (roof_max_y - roof_edge_y) * 4.0 * t * (1.0 - t);
-        let seg_l = (roof_rear_z - roof_front_z).abs() / (roof_segments - 1) as f32 + 0.005;
-        let seg_h = 0.04;
-        let seg = Cuboid::new(CAR_HALF_W * 1.86, seg_h, seg_l).mesh().build()
-            .translated_by(Vec3::new(0.0, y_parabolic, z));
-        shell_parts.push((seg, hex4(0xb5312a)));
-    }
-    // 左右弧形纵梁（两条完整 Cylinder，轴向沿前后 Z）
-    let rail_len = (roof_front_z - roof_rear_z).abs() * 1.05;
-    let rail_r = 0.032;
-    let rail_cyl = Cylinder::new(rail_r, rail_len).mesh().build()
-        .rotated_by(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2));   // 轴向 → Z
-    // 梁沿抛物线轨迹放 5 段近似弧
+    // ⑤ 光滑弧形车顶（用一根轴向 X 的大 Cylinder 截弧段，覆盖 A 顶 → C 顶）
+    //   Cylinder::new(radius, length=车宽*1.05)，轴向 = X，取 +Y 弧段
+    //   关键锚点（左右对称，只列左侧）：
+    //      A 顶：(X=-0.93*CW, Y=1.10, Z=0.00)     前风挡上缘
+    //      B 顶：(X=-0.93*CW, Y=1.28, Z=-0.78)    车顶最高点
+    //      C 顶：(X=-0.93*CW, Y=1.12, Z=-1.56)    后风挡上缘
+    //   这样前后两段都是斜直线（前挡 58°，后挡 58° 反向），中段微弧。
+    let (y_af, z_af) = (CAR_HALF_H * 2.00,  0.00);   // A 顶坐标
+    let (y_md, z_md) = (CAR_HALF_H * 2.32, -0.78);   // B 顶（最高点）
+    let (y_ac, z_ac) = (CAR_HALF_H * 2.04, -1.56);   // C 顶
+    // 用「大半径圆柱截片」近似弧形车顶：
+    //   Cylinder 放在 (y=y0, z=z0)，半径 R；取上弧段（Y 最大那一层）。
+    //   R 的求解：三点定圆，给个感值就行。
+    let roof_R = 1.60;
+    let roof_cyl_len = CAR_HALF_W * 1.96;
+    let roof_cyl = Cylinder::new(roof_R, roof_cyl_len).mesh().build()
+        .rotated_by(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2));   // 圆柱轴向 → X
+    // 截取 top section：我们取 cylinder 的 70% 以上部分（y > R*0.70），
+    // 实际 Bevy 没有 mesh 裁切工具，直接把整个 cylinder 平移到 (cy_cy, cy_cz)，
+    // 然后再叠一个遮挡体——这不现实。替代方案：拼接 3 个大倾斜薄板（梯形近似弧）
+    //   板①：A顶 → B顶（前半弧，上升段）
+    //   板②：B顶 → C顶（后半弧，下降段）
+    //   板③：B顶 正中央平顶（小矩形，保证视觉最高点圆滑）
+    let dz_ab = z_md - z_af;                    // = -0.78
+    let dy_ab = y_md - y_af;                    // = 0.18 差（B 更高）
+    let len_ab = (dz_ab * dz_ab + dy_ab * dy_ab).sqrt();
+    let ang_ab = dy_ab.atan2(-dz_ab);           // 上升段倾角（正 = 向上翘）
+    let ang_ab_x_rot = std::f32::consts::FRAC_PI_2 - ang_ab;   // 板绕 X 轴旋转角
+    let plate_ab = Cuboid::new(CAR_HALF_W * 1.92, 0.022, len_ab + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-ang_ab_x_rot))
+        .translated_by(Vec3::new(
+            0.0,
+            (y_af + y_md) / 2.0 - 0.01,
+            (z_af + z_md) / 2.0,
+        ));
+    shell_parts.push((plate_ab, hex4(0xb5312a)));
+    // 板②：B顶 → C顶（下降段）
+    let dz_bc = z_ac - z_md;
+    let dy_bc = y_ac - y_md;
+    let len_bc = (dz_bc * dz_bc + dy_bc * dy_bc).sqrt();
+    let ang_bc = (-dy_bc).atan2(-dz_bc);      // 倾角
+    let ang_bc_x_rot = std::f32::consts::FRAC_PI_2 - ang_bc;
+    let plate_bc = Cuboid::new(CAR_HALF_W * 1.92, 0.022, len_bc + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-ang_bc_x_rot))
+        .translated_by(Vec3::new(
+            0.0,
+            (y_md + y_ac) / 2.0 - 0.01,
+            (z_md + z_ac) / 2.0,
+        ));
+    shell_parts.push((plate_bc, hex4(0xb5312a)));
+    // 左右弧形纵梁（两条沿车顶曲线的"金箍"，现在用 2 段跟 A-B / B-C 一样倾斜的小 Cuboid）
+    let rail_sq = 0.034;
+    let rail_ab = Cuboid::new(rail_sq, rail_sq, len_ab).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-ang_ab_x_rot))
+        .translated_by(Vec3::new(0.0, (y_af + y_md) / 2.0, (z_af + z_md) / 2.0));
+    let rail_bc = Cuboid::new(rail_sq, rail_sq, len_bc).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-ang_bc_x_rot))
+        .translated_by(Vec3::new(0.0, (y_md + y_ac) / 2.0, (z_md + z_ac) / 2.0));
     for side in [-1.0f32, 1.0f32] {
-        for i in 0..roof_segments {
-            let t = i as f32 / (roof_segments - 1) as f32;
-            let z = roof_front_z + (roof_rear_z - roof_front_z) * t;
-            let y_parabolic = roof_edge_y + (roof_max_y - roof_edge_y) * 4.0 * t * (1.0 - t) - 0.005;
-            let rail_piece = Cuboid::new(rail_r * 2.0, rail_r * 2.0, rail_len / (roof_segments - 1) as f32 + 0.01).mesh().build()
-                .translated_by(Vec3::new(side * CAR_HALF_W * 0.92, y_parabolic, z));
-            shell_parts.push((rail_piece, hex4(0x921d18)));
-        }
-        let _ = &rail_cyl; // 留作后续替换（简单做法直接用小 Cuboid 足够）
+        let x = side * (CAR_HALF_W * 0.92);
+        shell_parts.push((rail_ab.clone().translated_by(Vec3::new(x, 0.0, 0.0)), hex4(0x921d18)));
+        shell_parts.push((rail_bc.clone().translated_by(Vec3::new(x, 0.0, 0.0)), hex4(0x921d18)));
     }
-    // 车顶板（覆盖 7 根横梁之间）—— 用 6 块薄板拼出弧形
-    let seg_l = (roof_front_z - roof_rear_z).abs() / (roof_segments - 1) as f32;
-    for i in 0..(roof_segments - 1) {
-        let t0 = i as f32 / (roof_segments - 1) as f32;
-        let t1 = (i + 1) as f32 / (roof_segments - 1) as f32;
-        let zm = (t0 + t1) / 2.0;
-        let z = roof_front_z + (roof_rear_z - roof_front_z) * zm;
-        let y0 = roof_edge_y + (roof_max_y - roof_edge_y) * 4.0 * t0 * (1.0 - t0);
-        let y1 = roof_edge_y + (roof_max_y - roof_edge_y) * 4.0 * t1 * (1.0 - t1);
-        let ym = (y0 + y1) / 2.0;
-        // 板倾斜角 = atan2((y1-y0), seg_l)
-        let ang = (y1 - y0).atan2(seg_l);
-        let plate = Cuboid::new(CAR_HALF_W * 1.86, 0.02, seg_l).mesh().build()
-            .rotated_by(Quat::from_rotation_x(ang))
-            .translated_by(Vec3::new(0.0, ym, z));
-        shell_parts.push((plate, hex4(0xb5312a)));
-    }
+    let _ = &roof_cyl;
+    // 存锚点常量（给 build_windows 用，用 const fn 近似）
+    let _ = (y_af, z_af, y_md, z_md, y_ac, z_ac);
 
     // ⑥ A / B / C 三根立柱（左右成对，共 6 根）————————————
-    //   A 柱：前风挡前缘两侧（斜柱，不是竖直）
-    //   B 柱：前后门之间竖直
-    //   C 柱：后玻璃后缘两侧（斜柱）
+    //   现在顶端严格对齐锚点：
+    //     A 柱底端 Z=+0.58，顶端 (z_af, y_af) = (0.00, 1.10)
+    //     B 柱底端 Z=-0.55，顶端 (z_md, y_md) = (-0.78, 1.28)  —— 稍微错位 0.2，让倾斜更自然（竖直柱）
+    //     C 柱底端 Z=-1.53，顶端 (z_ac, y_ac) = (-1.56, 1.12)
     let pillar_w = 0.07;    // 柱宽（沿车身 X 方向）
     let pillar_t = 0.05;    // 柱厚（沿 Z 方向）
-    // A 柱：Z 从 +0.60（仪表台） → 0.0（车顶前缘），Y 从 CAR_HALF_H + 0.25 → 约 +1.16
-    //   用 2 段 Cuboid 近似斜线
-    add_pillar_pair(&mut shell_parts, pillar_w, pillar_t,
-        Vec3::new(0.0, CAR_HALF_H * 1.30, 0.30),   // 段中点
-        22.0f32.to_radians(),   // X 轴旋转（前倾）
-        0.93f32);               // 高度（两柱中心连线长）
-    // B 柱：竖直，Z=-0.55，Y 从地板到顶
-    add_pillar_pair(&mut shell_parts, pillar_w, pillar_t,
-        Vec3::new(0.0, CAR_HALF_H * 1.15, -0.55),
-        0.0, 1.0f32);
-    // C 柱：Z 从 -1.55 → -1.05，后倾
-    add_pillar_pair(&mut shell_parts, pillar_w, pillar_t,
-        Vec3::new(0.0, CAR_HALF_H * 1.35, -1.30),
-        -22.0f32.to_radians(),
-        0.93f32);
+    let y_floor_a = CAR_HALF_H * 0.35;   // 柱底 y（门槛高度处）
+    let y_floor_b = CAR_HALF_H * 0.40;
+    let y_floor_c = CAR_HALF_H * 0.35;
+    // A 柱：从 (y_floor_a, z=0.58) → (y_af, z=0.00)
+    let a_dy = y_af - y_floor_a;
+    let a_dz = z_af - 0.58;
+    let a_len = (a_dy * a_dy + a_dz * a_dz).sqrt();
+    let a_ang = a_dy.atan2(a_dz);       // 柱方向向量
+    let a_rot_x = std::f32::consts::FRAC_PI_2 - a_ang;  // 让柱绕 X 轴往前倾斜（朝向车头）
+    add_pillar_pair_anchored(&mut shell_parts, pillar_w, pillar_t,
+        Vec3::new(0.0, (y_floor_a + y_af) / 2.0, (0.58 + z_af) / 2.0),
+        a_rot_x, a_len);
+    // B 柱：竖直
+    let b_len = y_md - y_floor_b;
+    add_pillar_pair_anchored(&mut shell_parts, pillar_w, pillar_t,
+        Vec3::new(0.0, (y_floor_b + y_md) / 2.0, -0.68),
+        0.0, b_len);
+    // C 柱：从 (y_floor_c, z=-1.53) → (y_ac, z=-1.56)（后倾）
+    let c_dy = y_ac - y_floor_c;
+    let c_dz = z_ac - (-1.53);
+    let c_len = (c_dy * c_dy + c_dz * c_dz).sqrt();
+    let c_ang = c_dy.atan2(c_dz);
+    let c_rot_x = std::f32::consts::FRAC_PI_2 - c_ang;
+    add_pillar_pair_anchored(&mut shell_parts, pillar_w, pillar_t,
+        Vec3::new(0.0, (y_floor_c + y_ac) / 2.0, (-1.53 + z_ac) / 2.0),
+        c_rot_x, c_len);
 
     // ── 合并成车身主 Mesh ────────────────────────────────────
     let body_mesh = merge_flat(shell_parts);
@@ -561,7 +586,9 @@ fn spawn_car(
             velocity: Vec3::ZERO,
             angvel: Vec3::ZERO,
             mass: 1500.0,
-            half: Vec3::new(CAR_HALF_W, CAR_HALF_H + CAR_HALF_H * 1.20, CAR_HALF_L),
+            // 新车体 y 范围：地板 -0.45 → 车顶 +1.28（= CAR_HALF_H*2.32），中心 +0.70
+            // → half = 从中心 0.70 到两端最大差值
+            half: Vec3::new(CAR_HALF_W, 0.92, CAR_HALF_L),
             health: 0.0,
         },
         CarRoot,
@@ -581,15 +608,14 @@ fn spawn_car(
     build_interior(commands, meshes, assets, car_root);
 }
 
-// 生成一对柱子（left/right 沿 X 镜像）
-fn add_pillar_pair(out: &mut Vec<(Mesh, [f32; 4])>, w: f32, t: f32, mid: Vec3, rot_x: f32, len: f32) {
+// 生成一对倾斜/竖直柱子（按锚点对齐参数）
+fn add_pillar_pair_anchored(out: &mut Vec<(Mesh, [f32; 4])>, w: f32, t: f32, mid: Vec3, rot_x: f32, len: f32) {
     let pillar = Cuboid::new(w, len, t).mesh().build()
         .rotated_by(Quat::from_rotation_x(rot_x));
     for side in [-1.0f32, 1.0f32] {
         let offset = Vec3::new(side * (CAR_HALF_W * 0.95 + w * 0.1), mid.y, mid.z);
         out.push((pillar.clone().translated_by(offset), hex4(0x8a1d18)));
     }
-    let _ = &mid;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -746,8 +772,14 @@ fn build_exterior_parts(
 }
 
 // ─────────────────────────────────────────────────────────────────
-//  玻璃：前挡大斜面 + 后挡 + 4 门窗（共 6 块独立薄板）
-//  平时用倾斜薄板（光滑面）；撞击力够时自动降级成 Voxel 面板喷碎渣
+//  玻璃：严格按 4 个锚点（A底/顶 B底/顶 C底/顶）拼 6 块斜面薄板：
+//    1. 前挡：(A底左右 y=0.82 z=0.58) → (A顶左右 y=1.10 z=0.00)
+//    2. 后挡：(C底左右 y=0.80 z=-1.53) → (C顶左右 y=1.12 z=-1.56)
+//    3. 左前门玻璃：(A左柱边缘 y=0.80 z=0.40) → (B左柱边缘 y=1.05 z=-0.58)，上沿 A顶→B顶
+//    4. 右前门玻璃：镜像
+//    5. 左后门玻璃：(B左柱边缘 y=1.00 z=-0.78) → (C左柱边缘 y=0.82 z=-1.50)，上沿 B顶→C顶
+//    6. 右后门玻璃：镜像
+//  这 6 块玻璃直接"定义"车身侧面轮廓曲线，车壳本身不再有碎块。
 // ─────────────────────────────────────────────────────────────────
 
 fn build_windows(
@@ -756,15 +788,32 @@ fn build_windows(
     assets: &CarAssets,
     car_root: Entity,
 ) {
-    // 前挡风玻璃：大斜面，Z 从 +0.60 → 0.0，Y 从 0.90 → 1.28
-    let w_front_w = CAR_HALF_W * 1.80;
-    let w_front_h = CAR_HALF_H * 2.25;  // 斜面长度
-    let w_front_t = 0.025;
-    let front_mesh = Cuboid::new(w_front_w, w_front_t, w_front_h).mesh().build()
-        .rotated_by(Quat::from_rotation_x(58.0f32.to_radians()))
-        .translated_by(Vec3::new(0.0, CAR_HALF_H * 1.68, CAR_HALF_L * 0.14));
-    commands.entity(car_root).with_children(|parent| {
-        parent.spawn((
+    use std::f32::consts::FRAC_PI_2;
+
+    // ── 锚点定义（与 spawn_car 的车身锚点严格一致） ─────────
+    let (y_af, z_af) = (CAR_HALF_H * 2.00,  0.00); // A 顶
+    let (y_md, z_md) = (CAR_HALF_H * 2.32, -0.78); // B 顶
+    let (y_ac, z_ac) = (CAR_HALF_H * 2.04, -1.56); // C 顶
+    let (y_ab, z_ab) = (CAR_HALF_H * 1.49,  0.58); // A 底（仪表盘高度）
+    let (y_bb, z_bb) = (CAR_HALF_H * 1.72, -0.68); // B 底
+    let (y_cb, z_cb) = (CAR_HALF_H * 1.49, -1.53); // C 底
+    // 侧窗玻璃左右 X（略小于柱外侧 0.95 CW，卡在柱内侧）
+    let win_x_in = CAR_HALF_W * 0.93;
+    // 玻璃厚度
+    let t = 0.025;
+
+    // ── 1. 前挡风玻璃 ───────────────────────────
+    // 向量：(y_ab, z_ab) 底 → (y_af, z_af) 顶
+    let (dy, dz) = (y_af - y_ab, z_af - z_ab);
+    let len = (dy * dy + dz * dz).sqrt();
+    let ang = dy.atan2(dz);          // 玻璃法线方向角度
+    let rot_x = FRAC_PI_2 - ang;    // 薄板（W×T×L）的 L 沿玻璃长度方向，需要先转 FRAC_PI_2 再纠正
+    let width = CAR_HALF_W * 1.88;
+    let front_mesh = Cuboid::new(width, t, len + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-rot_x))
+        .translated_by(Vec3::new(0.0, (y_ab + y_af) / 2.0, (z_ab + z_af) / 2.0));
+    commands.entity(car_root).with_children(|p| {
+        p.spawn((
             Mesh3d(meshes.add(front_mesh)),
             MeshMaterial3d(assets.glass_mat.clone()),
             Transform::default(),
@@ -773,12 +822,16 @@ fn build_windows(
         ));
     });
 
-    // 后挡风玻璃：更陡的后倾斜面
-    let rear_mesh = Cuboid::new(CAR_HALF_W * 1.78, 0.025, CAR_HALF_H * 2.0).mesh().build()
-        .rotated_by(Quat::from_rotation_x(-58.0f32.to_radians()))
-        .translated_by(Vec3::new(0.0, CAR_HALF_H * 1.72, -CAR_HALF_L * 0.76));
-    commands.entity(car_root).with_children(|parent| {
-        parent.spawn((
+    // ── 2. 后挡风玻璃 ───────────────────────────
+    let (dy2, dz2) = (y_ac - y_cb, z_ac - z_cb);
+    let len2 = (dy2 * dy2 + dz2 * dz2).sqrt();
+    let ang2 = dy2.atan2(dz2);
+    let rot_x2 = FRAC_PI_2 - ang2;
+    let rear_mesh = Cuboid::new(CAR_HALF_W * 1.84, t, len2 + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-rot_x2))
+        .translated_by(Vec3::new(0.0, (y_cb + y_ac) / 2.0, (z_cb + z_ac) / 2.0));
+    commands.entity(car_root).with_children(|p| {
+        p.spawn((
             Mesh3d(meshes.add(rear_mesh)),
             MeshMaterial3d(assets.glass_mat.clone()),
             Transform::default(),
@@ -787,28 +840,55 @@ fn build_windows(
         ));
     });
 
-    // 4 门侧窗（每扇门一块长方形薄板，略倾斜）
-    let side_w_t = 0.02;
-    let side_w_len = 0.68;
-    let side_w_h = 0.40;
-    let mesh_side = Cuboid::new(side_w_t, side_w_h, side_w_len).mesh().build();
-    let placements: [(Vec3, Quat, WindowPane); 4] = [
-        (Vec3::new(-CAR_HALF_W * 0.995, CAR_HALF_H * 1.35,  0.00), Quat::from_rotation_y(-6.0f32.to_radians()), WindowPane::DoorFL),
-        (Vec3::new( CAR_HALF_W * 0.995, CAR_HALF_H * 1.35,  0.00), Quat::from_rotation_y( 6.0f32.to_radians()), WindowPane::DoorFR),
-        (Vec3::new(-CAR_HALF_W * 0.995, CAR_HALF_H * 1.35, -0.92), Quat::from_rotation_y(-5.0f32.to_radians()), WindowPane::DoorRL),
-        (Vec3::new( CAR_HALF_W * 0.995, CAR_HALF_H * 1.35, -0.92), Quat::from_rotation_y( 5.0f32.to_radians()), WindowPane::DoorRR),
+    // ── 3/4. 前门玻璃（左右各一块）：上沿 A顶→B顶，下沿 A柱中→B柱中 ─
+    let (win_dy1, win_dz1) = (y_md - y_af, z_md - z_af);
+    let win_len1 = (win_dy1 * win_dy1 + win_dz1 * win_dz1).sqrt();
+    let ang1 = win_dy1.atan2(win_dz1);
+    let rot_x1 = FRAC_PI_2 - ang1;
+    let win_h1 = 0.42;    // 侧窗高度（Y 方向）——其实是平板的 W 方向（=h，沿车身），和前门形状一致
+    // 前门：上沿 A顶→B顶，下沿"门槛顶 z=0.40→z=-0.58，y=CAR_HALF_H*1.20~CAR_HALF_H*1.30"
+    // 简化：按上沿 A顶 B顶 中点放一块尺寸 = 侧面梯形（用矩形近似）
+    let front_door_win_mesh = Cuboid::new(t, win_h1, win_len1 + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-rot_x1));
+    let side_placements: [(Vec3, Quat, WindowPane); 4] = [
+        // 前左
+        (Vec3::new(-win_x_in, (y_af + y_md) / 2.0 - 0.14, (z_af + z_md) / 2.0),
+         Quat::from_rotation_y(-2.0f32.to_radians()),
+         WindowPane::DoorFL),
+        // 前右
+        (Vec3::new( win_x_in, (y_af + y_md) / 2.0 - 0.14, (z_af + z_md) / 2.0),
+         Quat::from_rotation_y( 2.0f32.to_radians()),
+         WindowPane::DoorFR),
+        // 后左：上沿 B顶→C顶
+        (Vec3::new(-win_x_in, (y_md + y_ac) / 2.0 - 0.14, (z_md + z_ac) / 2.0),
+         Quat::from_rotation_y(-1.5f32.to_radians()),
+         WindowPane::DoorRL),
+        // 后右
+        (Vec3::new( win_x_in, (y_md + y_ac) / 2.0 - 0.14, (z_md + z_ac) / 2.0),
+         Quat::from_rotation_y( 1.5f32.to_radians()),
+         WindowPane::DoorRR),
     ];
-    for (off, rot, tag) in placements {
-        commands.entity(car_root).with_children(|parent| {
-            parent.spawn((
-                Mesh3d(meshes.add(mesh_side.clone())),
+    // 后门玻璃（长度不同）：按 B顶→C顶 的长度和角度放
+    let (win_dy2, win_dz2) = (y_ac - y_md, z_ac - z_md);
+    let win_len2 = (win_dy2 * win_dy2 + win_dz2 * win_dz2).sqrt();
+    let ang2b = win_dy2.atan2(win_dz2);
+    let rot_x2b = FRAC_PI_2 - ang2b;
+    let rear_door_win_mesh = Cuboid::new(t, 0.40, win_len2 + 0.02).mesh().build()
+        .rotated_by(Quat::from_rotation_x(-rot_x2b));
+
+    for (i, &(off, rot_y, tag)) in side_placements.iter().enumerate() {
+        let m = if i < 2 { front_door_win_mesh.clone() } else { rear_door_win_mesh.clone() };
+        commands.entity(car_root).with_children(|p| {
+            p.spawn((
+                Mesh3d(meshes.add(m)),
                 MeshMaterial3d(assets.glass_mat.clone()),
-                Transform::from_translation(off).with_rotation(rot),
+                Transform::from_translation(off).with_rotation(rot_y),
                 tag,
                 Name::new(format!("glass_{:?}", tag)),
             ));
         });
     }
+    let _ = (&y_bb, &z_bb);  // 留着后续细化用
 }
 
 #[derive(Component, Debug, Copy, Clone)]
@@ -1125,12 +1205,12 @@ fn car_wall_impact(
         if pos.z - half.z > wall_front_z_max + 2.0 { continue; }
 
         let mut hits: Vec<(usize, usize, usize, Vec3)> = Vec::new();
-        for i in 0..5 {
-            for j in 0..3 {
-                for k in 0..3 {
-                    let t_x = (i as f32 / 4.0) * 2.0 - 1.0;
-                    let t_y = (j as f32 / 2.0) * 2.0 - 1.0;
-                    let t_z = 0.75 + (k as f32 / 2.0) * 0.4;
+        for i in 0..7 {
+            for j in 0..5 {
+                for k in 0..5 {
+                    let t_x = (i as f32 / 6.0) * 2.0 - 1.0;
+                    let t_y = (j as f32 / 4.0) * 2.0 - 1.0;
+                    let t_z = 0.55 + (k as f32 / 4.0) * 0.60;
                     let probe = Vec3::new(
                         pos.x + half.x * t_x,
                         pos.y + half.y * t_y,
