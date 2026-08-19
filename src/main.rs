@@ -87,16 +87,31 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     wall: Res<wall::WallData>,
 ) {
-    // 共享白色材质（颜色全在顶点色里 → 所有东西自动合批）
-    let mat = materials.add(StandardMaterial {
+    // 砖面贴图（程序化生成：边框 + 砂浆 + 噪点，零外部资源，见 wall.rs）
+    let brick_tex = images.add(wall::brick_texture());
+    // 砖的材质：白底 × 贴图。每砖颜色仍由顶点色提供（合批不受影响，
+    // 因为整面墙还是共享这 1 个材质）
+    let brick_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        base_color_texture: Some(brick_tex),
+        perceptual_roughness: 0.95,
+        ..default()
+    });
+    // 素面白材质（地面用，不带贴图）
+    let plain_mat = materials.add(StandardMaterial {
         base_color: Color::WHITE,
         perceptual_roughness: 0.85,
         ..default()
     });
-    let debris_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22).mesh().build());
-    commands.insert_resource(WallAssets { material: mat.clone(), debris_mesh });
+    // 碎砖：小方块 + 中档石色顶点色。材质带砖面贴图 → 碎块自带"断砖"质感
+    let mut debris_mesh = Cuboid::new(0.22, 0.22, 0.22).mesh().build();
+    let n = debris_mesh.count_vertices();
+    debris_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.62, 0.60, 0.55, 1.0]; n]);
+    let debris_mesh = meshes.add(debris_mesh);
+    commands.insert_resource(WallAssets { material: brick_mat.clone(), debris_mesh });
 
     // 暖阳光 + 阴影（无阴影 = 漂浮感）
     commands.spawn((
@@ -119,7 +134,7 @@ fn setup(
     ground.compute_flat_normals();
     commands.spawn((
         Mesh3d(meshes.add(ground)),
-        MeshMaterial3d(mat.clone()),
+        MeshMaterial3d(plain_mat.clone()),
         Transform::default(),
     ));
 
@@ -131,7 +146,7 @@ fn setup(
             commands.spawn((
                 WallChunk { cx, cy },
                 Mesh3d(meshes.add(mesh)),
-                MeshMaterial3d(mat.clone()),
+                MeshMaterial3d(brick_mat.clone()),
                 Transform::default(),
             ));
         }
