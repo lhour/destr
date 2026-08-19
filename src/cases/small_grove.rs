@@ -10,7 +10,8 @@ use bevy::ecs::message::MessageWriter;
 use bevy::prelude::*;
 
 use destr::common::{
-    add_default_plugins, plain_material, spawn_camera_at, spawn_ground, spawn_sun, tint,
+    add_default_plugins, flip_uv, plain_material, scale_uv, spawn_camera_at, spawn_ground,
+    spawn_sun, tint, translate_uv,
 };
 use destr::demo::{request_exit, request_screenshot, DemoDriver};
 use destr::elements::{
@@ -92,15 +93,41 @@ fn setup(
             let seed = row * 100 + col;
             let h = rng_range(seed, 1, 2.6, 3.9);
             let r0 = rng_range(seed, 2, 0.28, 0.44);
-            let r1 = rng_range(seed, 3, 0.10, 0.16);
-            // bend 方向：θ 从 -40°..+160° 选一个方向，大小 0.15..0.45
-            let theta = rng_range(seed, 4,
-                -40.0_f32.to_radians(), 160.0_f32.to_radians());
-            let bend_mag = rng_range(seed, 5, 0.15, 0.48);
+            // ✅ 修改 1：锥度调小——顶径保持底径的 60%~75%，不再是 0.10 的"针头顶"
+            //     现实中多数树干上下直径差只有 ~25~40%，这样视觉上更自然。
+            let top_ratio = rng_range(seed, 30, 0.60, 0.75);
+            let r1 = r0 * top_ratio;
+
+            // ✅ 修改 2：弯曲度分三档（30% 直 / 50% 略歪 / 20% 明显弯）
+            //           θ 扩成 -180°~180° 全方向，不再缺半边角度
+            let bucket = rng2(seed, 40); // 0..1 区间决定档位
+            let bend_mag = if bucket < 0.30 {
+                rng_range(seed, 41, 0.0, 0.05)         // 直上直下：5cm 内近似直
+            } else if bucket < 0.80 {
+                rng_range(seed, 42, 0.08, 0.22)        // 略歪：8~22 cm
+            } else {
+                rng_range(seed, 43, 0.24, 0.52)        // 明显弯曲
+            };
+            let theta = rng_range(seed, 44,
+                -180.0_f32.to_radians(), 180.0_f32.to_radians());   // 全 360°
             let bend = Vec2::new(theta.cos() * bend_mag, theta.sin() * bend_mag);
 
-            // 放树干：mesh 按 PALETTE 三档棕褐色染色（否则 bark_texture 只有灰度，整体苍白）
-            let mesh = curved_trunk_mesh(h, r0, r1, 18, 7, bend, seed);
+            // 放树干：mesh 按 PALETTE 三档棕褐色染色
+            let mesh = curved_trunk_mesh(h, r0, r1, 24, 9, bend, seed); // 细分加一点更圆滑
+
+            // ✅ 修改 3：花纹每棵独立可调 —— UV 随机：翻转 4 种 + 缩放 (0.65~1.6, 0.55~1.8) + 平移 (0~1 周)
+            //           组合数 4 × 几十² × 几百 = 一眼看过去基本不重样
+            let fx = rng2(seed, 71) < 0.5;
+            let fy = rng2(seed, 72) < 0.5;
+            let mesh = flip_uv(mesh, fx, fy);
+            let su = rng_range(seed, 73, 0.65, 1.6);   // U 方向：围绕树干的"环向纹路密度"
+            let sv = rng_range(seed, 74, 0.55, 1.8);   // V 方向：竖直方向"皴裂纹密度"
+            let mesh = scale_uv(mesh, su, sv);
+            let du = rng_range(seed, 75, 0.0, 1.0);    // 让每棵树的"第几圈纹路对齐"错开
+            let dv = rng_range(seed, 76, 0.0, 1.0);    // 让每棵树的"第几米高度处的断层"错开
+            let mesh = translate_uv(mesh, du, dv);
+
+            // 颜色选三档（之前的逻辑保留）
             let pick = if rng2(seed, 60) < 0.18 {
                 CurvedCylinderTrunk::PALETTE[2]
             } else if rng2(seed, 61) < 0.55 {
@@ -197,7 +224,11 @@ fn demo_exit(time: Res<Time>, stats: Res<GroveStats>, mut exit: MessageWriter<Ap
         println!("  · 树根乱石：共 {} 块 IrregularRock（每棵树下 2~5 块，随机尺寸/旋转/颜色）",
                  stats.rocks);
         println!("  · 地表碎物：共 {} 块 DebrisPiece（整个场景 12×12 m 内随机撒）", stats.litters);
-        println!("  · 单棵树参数范围：高 2.6~3.9 m，底径 0.56~0.88 m，顶径 0.20~0.32 m，弯曲量 0.15~0.48 m");
+        println!("  · 单棵树参数范围：");
+        println!("    - 高 2.6~3.9 m，底径 0.56~0.88 m，顶径 = 底径 × 60%~75%（锥度明显调小）");
+        println!("    - 弯曲度三档：约 30% 近似直（0~5cm），约 50% 略歪（8~22 cm），约 20% 明显弯（24~52 cm）");
+        println!("    - 弯曲方向：360° 全向（不再集中半边）");
+        println!("    - 花纹每棵独立：UV flip×4 / U缩放(0.65~1.6) / V缩放(0.55~1.8) / UV平移(各自错开)");
         request_exit(&mut exit);
     }
 }

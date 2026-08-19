@@ -161,3 +161,27 @@ pub fn flip_uv(mut m: Mesh, fx: bool, fy: bool) -> Mesh {
     }
     m
 }
+
+/// 对 UV 做仿射：`(u, v) → (u * su + du, v * sv + dv)`。
+///
+/// 典型用法：
+///   - 让每棵树的树皮花纹密度不同：scale_uv(m, rng(0.7, 1.4), rng(0.6, 1.6))
+///   - 让花纹沿树干高度错开：translate_uv(m, 0, rng(0, 1))
+///   - 两者组合：先 scale 再 translate（顺序：先缩后移更符合直觉）。
+pub fn transform_uv(mut m: Mesh, su: f32, sv: f32, du: f32, dv: f32) -> Mesh {
+    use bevy::mesh::VertexAttributeValues::Float32x2;
+    if let Some(Float32x2(uvs)) = m.attribute(Mesh::ATTRIBUTE_UV_0) {
+        let tx: Vec<[f32; 2]> = uvs
+            .iter()
+            .map(|[u, v]| [u * su + du, v * sv + dv])
+            .collect();
+        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, tx);
+    }
+    m
+}
+
+/// 便捷函数：只缩放 UV（等价 `transform_uv(m, su, sv, 0.0, 0.0)`）。
+pub fn scale_uv(m: Mesh, su: f32, sv: f32) -> Mesh { transform_uv(m, su, sv, 0.0, 0.0) }
+
+/// 便捷函数：只平移 UV（等价 `transform_uv(m, 1.0, 1.0, du, dv)`）。
+pub fn translate_uv(m: Mesh, du: f32, dv: f32) -> Mesh { transform_uv(m, 1.0, 1.0, du, dv) }
