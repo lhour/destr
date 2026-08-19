@@ -1,4 +1,4 @@
-//! 可破坏砖墙 —— 数据层 + 网格生成（第 1、2 步）。
+//! destructible_wall case 的私有模块：墙数据层 + chunk 网格生成。
 //!
 //! 【第 1 步】WallData：一面墙只是一张 bool 表。打洞 = 改表格。
 //! 【第 2 步】build_chunk_mesh：把表格变成 Mesh。
@@ -10,9 +10,12 @@
 
 use bevy::asset::RenderAssetUsages;
 use bevy::math::primitives::Cuboid;
-use bevy::mesh::{Mesh, PrimitiveTopology, VertexAttributeValues};
+use bevy::mesh::PrimitiveTopology;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+
+// 复用 common 的 merge/tint/flip_uv，tex 的 brick_texture + hash2
+use destr::common::{flip_uv, merge_flat, tint};
+use destr::tex::hash2;
 
 // ── 尺寸常量（全部由此推导，禁止魔法数字）────────────────────────────
 pub const BLOCK_W: f32 = 1.0; // 砖宽（X）
@@ -47,13 +50,6 @@ fn srgb(hex: u32) -> Color {
 fn lin(hex: u32) -> [f32; 4] {
     let l = srgb(hex).to_linear();
     [l.red, l.green, l.blue, 1.0]
-}
-/// 确定性伪随机 [0,1)：同一输入永远同一输出（可复现的"随机"）
-pub fn hash2(x: i32, y: i32) -> f32 {
-    let mut h = (x as u32).wrapping_mul(0x1f1f1f1f) ^ ((y as u32) << 7);
-    h = h.wrapping_mul(0x1f1f1f1f);
-    h ^= h >> 13;
-    (h & 0xffff) as f32 / 65535.0
 }
 /// 每块砖在三档石色里"随机"挑一档 —— 颜色统一是塑料感的第一来源
 fn block_color(c: usize, y: usize, x: usize) -> [f32; 4] {
@@ -100,21 +96,6 @@ impl WallData {
             .flat_map(|r| r.iter())
             .filter(|&&b| b)
             .count()
-    }
-
-    /// 世界坐标里所有活砖的中心（第 4 步生成碎砖时校验用，也可做悬空检查）
-    pub fn alive_blocks(&self) -> Vec<(usize, usize, usize)> {
-        let mut v = Vec::new();
-        for c in 0..LAYERS {
-            for y in 0..COURSES {
-                for x in 0..COLS {
-                    if self.alive(c, y, x) {
-                        v.push((c, y, x));
-                    }
-                }
-            }
-        }
-        v
     }
 }
 
@@ -168,13 +149,12 @@ pub fn build_chunk_mesh(wall: &WallData, cx: usize, cy: usize) -> Mesh {
         for y in y0..(y0 + CHUNK_ROWS).min(COURSES) {
             for x in x0..(x0 + CHUNK_COLS).min(COLS) {
                 if !wall.alive(c, y, x) {
-                    continue; // ← 死砖不产生任何三角形
+                    continue;
                 }
-                // 满尺寸砖：砖缝和边框全部画在贴图里（见 brick_texture），
-                // 好处是墙不再有镂空缝（不透光），几何还是一个盒子/砖。
+                // 满尺寸砖：砖缝和边框全部画在 tex::brick_texture 里
                 let mut m = Cuboid::new(BLOCK_W, BLOCK_H, BLOCK_D).mesh().build();
                 m = m.translated_by(block_center(c, y, x));
-                // 哈希镜像 UV：同一张贴图，每块砖随机取 4 种朝向之一（白送的变化）
+                // 哈希镜像 UV：同一张贴图 4 种朝向（白送的变化量）
                 let fx = hash2(x as i32 * 3 + c as i32, y as i32) < 0.5;
                 let fy = hash2(x as i32, y as i32 * 5 + c as i32) < 0.5;
                 let m = flip_uv(m, fx, fy);
@@ -182,98 +162,20 @@ pub fn build_chunk_mesh(wall: &WallData, cx: usize, cy: usize) -> Mesh {
             }
         }
     }
-    merged_flat(parts)
-}
-
-/// chapel 同款合批配方：着色 → 合并 → 平面着色。
-/// 全场景共用一个白色 StandardMaterial，颜色全走顶点色 → 自动合批。
-fn merged_flat(parts: Vec<(Mesh, [f32; 4])>) -> Mesh {
     if parts.is_empty() {
-        // 整块 chunk 被打光了：返回空网格（0 个三角形，合法）
         let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
         m.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
         return m;
     }
-    let mut it = parts.into_iter().map(|(m, c)| tinted(m, c));
-    let mut base = it.next().unwrap();
-    for p in it {
-        base.merge(&p).expect("parts share attributes");
-    }
+    // 先挨个上顶点色，再合并（复用 common::merge_flat → 做乘算）
+    let colored: Vec<_> = parts.into_iter().map(|(m, c)| (tint(m, c), [1.0, 1.0, 1.0, 1.0])).collect();
+    let mut base = merge_flat(colored);
     base.duplicate_vertices();
     base.compute_flat_normals();
     base
 }
 
-/// 给每个顶点写同一个颜色（顶点色）
-fn tinted(mut m: Mesh, c: [f32; 4]) -> Mesh {
-    let n = m.count_vertices();
-    m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![c; n]);
-    m
-}
-
-/// 镜像 UV（u→1-u / v→1-v）：不额外画贴图就让砖面有 4 种纹理朝向，
-/// 避免"每块砖噪点一模一样"的塑料感。
-fn flip_uv(mut m: Mesh, fx: bool, fy: bool) -> Mesh {
-    if !fx && !fy {
-        return m;
-    }
-    if let Some(VertexAttributeValues::Float32x2(uvs)) = m.attribute(Mesh::ATTRIBUTE_UV_0) {
-        let flipped: Vec<[f32; 2]> = uvs
-            .iter()
-            .map(|[u, v]| [if fx { 1.0 - u } else { *u }, if fy { 1.0 - v } else { *v }])
-            .collect();
-        m.insert_attribute(Mesh::ATTRIBUTE_UV_0, flipped);
-    }
-    m
-}
-
-// ── 砖面贴图：边框/砂浆/噪点全画在一张程序化贴图里（方案 D）──────────
-//
-// 原理：PBR 管线里 最终颜色 = 顶点色（每砖随机石色）× 贴图 × 光照。
-// 所以贴图以纯白为基准（不染色），砂浆缝和倒角阴影用"乘法变暗"实现：
-//   - 外圈（3% 宽）：砂浆缝，亮度 ~0.62
-//   - 内圈过渡带：0.78→1.0 渐变，模拟砖边缘的倒角/圆角受光
-//   - 砖面主体：白色 + 两档频率的噪点（细粒凹坑 + 大块水渍）
-// 一张 256² 贴图 = 零几何成本换来"边框 + 灰缝 + 细节"三样东西。
-
-/// 缝宽（占面的比例）。u 对应砖长边、v 对应短边，所以 v 稍宽以补偿长宽比。
-const MORTAR_U: f32 = 0.030;
-const MORTAR_V: f32 = 0.050;
-/// 倒角过渡带宽度（从砂浆边往里）
-const CHAMFER: f32 = 0.10;
-
-pub fn brick_texture() -> Image {
-    const S: u32 = 256;
-    let mut data = Vec::with_capacity((S * S * 4) as usize);
-    for py in 0..S {
-        for px in 0..S {
-            // 到四条边的距离（0~0.5，u/v 单位）
-            let du = (px as f32 / S as f32).min(1.0 - px as f32 / S as f32);
-            let dv = (py as f32 / S as f32).min(1.0 - py as f32 / S as f32);
-            let lum = if du < MORTAR_U || dv < MORTAR_V {
-                // 砂浆缝：基本灰 + 轻噪点（缝要平，噪点减半）
-                0.62 + (hash2(px as i32, py as i32 * 7) - 0.5) * 0.06
-            } else {
-                // 砖面：靠缝暗（倒角感）→ 中心亮，叠两档频率噪点
-                let d = ((du - MORTAR_U).min(dv - MORTAR_V) / CHAMFER).clamp(0.0, 1.0);
-                0.78 + 0.22 * d
-                    + (hash2(px as i32 * 3, py as i32 * 11) - 0.5) * 0.09   // 细粒
-                    + (hash2(px as i32 / 21, py as i32 / 17) - 0.5) * 0.08  // 大块渍
-            };
-            let b = (lum.clamp(0.0, 1.0) * 255.0) as u8;
-            data.extend_from_slice(&[b, b, b, 255]);
-        }
-    }
-    Image::new(
-        Extent3d { width: S, height: S, depth_or_array_layers: 1 },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
-}
-
-// ── 验证出口：ASCII 截面（内存截面扫描，SCENE_SKILL.md 方案 D）────────
+// ── 验证出口：ASCII 截面（内存截面扫描）────────────────────────────
 pub fn print_wall_section(wall: &WallData, c: usize) {
     println!("── 墙截面（厚度层 c={}）──", c);
     for y in (0..COURSES).rev() {
