@@ -31,6 +31,11 @@ path = "src/cases/semicircular_arch.rs"
 name = "small_grove"
 path = "src/cases/small_grove.rs"
 
+# Case 05: 汽车撞击（整体刚体汽车 + 零件级破坏 + Voxel 玻璃粉碎）
+[[bin]]
+name = "car_crash"
+path = "src/cases/car_crash.rs"
+
 [dependencies]
 bevy = { version = "0.18", default-features = true }
 
