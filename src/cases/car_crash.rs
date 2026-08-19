@@ -18,8 +18,34 @@ const CASE: &str = "car_crash";
 #[derive(Message)]
 struct CarResetMsg;
 
+/// 启动参数（启动瞬间存入全局 OnceCell，setup 里再读，绕开 Commands<->Resource 所有权问题）
+static RUN_FLAGS: std::sync::OnceLock<RunFlags> = std::sync::OnceLock::new();
+
+#[derive(Resource, Clone, Default)]
+struct RunFlags {
+    demo: bool,
+    /// 非空：从这个 JSON 文件构建车身外壳，而不是走 Rust 硬编码
+    json_body: Option<String>,
+}
+
 fn main() {
-    let demo = std::env::args().any(|a| a == "--demo");
+    let mut flags = RunFlags::default();
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--demo" => flags.demo = true,
+            "--json" => {
+                if let Some(path) = args.next() {
+                    flags.json_body = Some(path);
+                } else {
+                    eprintln!("--json 需要一个路径参数，例如 --json assets/json/car_body.json");
+                    std::process::exit(2);
+                }
+            }
+            other => eprintln!("[car_crash] 忽略未知参数: {}", other),
+        }
+    }
+    let _ = RUN_FLAGS.set(flags.clone());
     let mut app = App::new();
     add_default_plugins(&mut app, format!("destr · {CASE} — 整体汽车撞墙"));
     app.insert_resource(DemoDriver::default())
@@ -35,7 +61,7 @@ fn main() {
                 reset_car,
             ),
         );
-    if demo {
+    if flags.demo {
         app.add_systems(Update, (demo_drive, demo_shot, demo_exit));
     }
     app.run();
@@ -321,6 +347,21 @@ fn setup(
     build_wall_visuals(&wall, &mut commands, &mut meshes, brick_mat.clone());
     commands.insert_resource(wall);
 
+    // 从 RunFlags 取可选的 JSON 车身描述路径
+    let flags = RUN_FLAGS.get().cloned().unwrap_or_default();
+    let json_body_text: Option<String> = match flags.json_body.as_deref() {
+        Some(path) => {
+            match std::fs::read_to_string(path) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("[car_crash] 无法读取 {}: {}；回退到 Rust 硬编码", path, e);
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
     spawn_car(&mut commands, &mut meshes, &CarAssets {
         paint_mat: paint,
         plastic_mat: plastic,
@@ -332,7 +373,7 @@ fn setup(
         taillight_mat: taillight,
         debris_mesh: debris_mesh_h,
         brick_mat,
-    });
+    }, json_body_text.as_deref());
 }
 
 fn build_wall_visuals(
@@ -406,18 +447,32 @@ fn spawn_car(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     assets: &CarAssets,
+    json_body: Option<&str>,
 ) {
+    use destr::common::build_parts_from_json;
+
     // ── 1. 主体骨架（CarRoot 节点，整体刚体组件已经挂载在一个合并车身壳上） ────
     // 为了"整体刚体 + 多零件"的架构依然成立：CarRigidBody 挂在 car_root 上，
     // car_root 自己有一个视觉组件（合并车身外壳：地板 + 顶梁骨架 + 车门框横梁），
     // 其余零件都 spawn 为 car_root 的 children。
 
     // ─────────────────────────────────────────────────────────────
-    //  车身外壳：多个带角度 Cuboid 合成三厢轿车剪影（侧面 引擎盖 - 前玻璃 - 顶 - 后玻璃 - 尾箱）
+    //  车身外壳：优先加载 JSON（用户自定义），否则回退到 Rust 硬编码
     // ─────────────────────────────────────────────────────────────
-    //   Z 坐标（车头朝 +Z）：
-    //   CAR_HALF_L = +2.10 → 车最前（保险杠尖端）
-    //   +1.55 → 引擎盖前端
+    let mut shell_parts: Vec<(Mesh, [f32; 4])> = match json_body {
+        Some(src) => match build_parts_from_json(src) {
+            Ok(parts) => {
+                println!("[car_crash] 从 JSON 构建车壳：{} 个图元", parts.len());
+                parts
+            }
+            Err(e) => {
+                eprintln!("[car_crash] JSON 车壳构建失败，回退到 Rust 硬编码：{}", e);
+                Vec::new()
+            }
+        },
+        None => Vec::new(),
+    };
+    let use_json = !shell_parts.is_empty();
     //   +0.60 → 挡风玻璃下缘 / 仪表盘位置
     //   -0.00 → 车顶前缘
     //   -1.55 → 车顶后缘 / 后玻璃下缘
@@ -433,12 +488,11 @@ fn spawn_car(
     //      +CAR_HALF_W = +0.95 → 车身右沿
     // ─────────────────────────────────────────────────────────────
 
-    let mut shell_parts: Vec<(Mesh, [f32; 4])> = Vec::new();
-
-    // ① 地板（黑色长扁底盘）——————————————————————————————————
-    let floor_h = 0.08;
-    let floor_mesh = Cuboid::new(CAR_HALF_W * 1.92, floor_h, CAR_HALF_L * 1.92).mesh().build();
-    shell_parts.push((floor_mesh.translated_by(Vec3::new(0.0, -CAR_HALF_H + floor_h / 2.0, 0.0)), hex4(0x212123)));
+    if !use_json {
+        // ① 地板（黑色长扁底盘）——————————————————————————————————
+        let floor_h = 0.08;
+        let floor_mesh = Cuboid::new(CAR_HALF_W * 1.92, floor_h, CAR_HALF_L * 1.92).mesh().build();
+        shell_parts.push((floor_mesh.translated_by(Vec3::new(0.0, -CAR_HALF_H + floor_h / 2.0, 0.0)), hex4(0x212123)));
 
     // ② 防火墙 + 前后隔板（4 块立板，定义 3 个箱：前仓 / 座舱 / 后仓）
     let fw_mesh = Cuboid::new(CAR_HALF_W * 1.96, CAR_HALF_H * 1.0, 0.04).mesh().build();
@@ -574,6 +628,8 @@ fn spawn_car(
     add_pillar_pair_anchored(&mut shell_parts, pillar_w, pillar_t,
         Vec3::new(0.0, (y_floor_c + y_ac) / 2.0, (-1.53 + z_ac) / 2.0),
         c_rot_x, c_len);
+
+    } // !use_json 结束
 
     // ── 合并成车身主 Mesh ────────────────────────────────────
     let body_mesh = merge_flat(shell_parts);
