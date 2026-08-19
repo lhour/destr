@@ -21,6 +21,16 @@ path = "src/cases/destructible_wall.rs"
 name = "basic_elements_showcase"
 path = "src/cases/basic_elements_showcase.rs"
 
+# Case 03: 半圆拱门（12 块 ArchBrick 拼拱圈 + 砖砌支座 + 基础）
+[[bin]]
+name = "semicircular_arch"
+path = "src/cases/semicircular_arch.rs"
+
+# Case 04: 小树林（N 棵不同 seed/bend 的歪曲树干 + 树根乱石）
+[[bin]]
+name = "small_grove"
+path = "src/cases/small_grove.rs"
+
 [dependencies]
 bevy = { version = "0.18", default-features = true }
 

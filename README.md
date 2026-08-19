@@ -26,11 +26,15 @@ cargo run --release --bin destructible_wall -- --demo
 |---|---|---|---|
 | 01 | `destructible_wall` | 可破坏砖墙（左键打洞，碎砖掉落） | 体素数据层、Chunk 网格重建、消息解耦、程序化贴图边框、碎砖手写物理 |
 | 02 | `basic_elements_showcase` | 6 种基础元素陈列（砖/水泥块/碎砖/不规则石块/拱曲面楔形砖/歪曲树干 排成一列） | `destr::elements::Element` trait、尺寸 API 封装、三种非立方 Mesh 工具、程序化贴图×5 |
+| 03 | `semicircular_arch` | 半圆拱门（12 块 ArchBrick 拼拱圈 + 砖砌支座 + 墩基/门槛） | ArchBrick 自定义弧度 `custom_ring_brick(π/12)`、Y 轴旋转拼装、错缝砌支座 |
+| 04 | `small_grove` | 小树林 3×3=9 棵（每棵不同 seed/bend/高度/锥度）+ 每棵脚下 2~5 块 IrregularRock + 22 块 DebrisPiece 地表碎物 | `curved_trunk_mesh` 参数化 + `irregular_rock_mesh` 尺寸/旋转随机 + hash2 确定性随机 |
 
 每个 case 自己的说明请点目录：
 
 - [cases/destructible_wall/README.md](cases/destructible_wall/README.md)
 - [cases/basic_elements_showcase/README.md](cases/basic_elements_showcase/README.md)
+- [cases/semicircular_arch/README.md](cases/semicircular_arch/README.md)
+- [cases/small_grove/README.md](cases/small_grove/README.md)
 
 ## 共享库（`destr::*`）
 
