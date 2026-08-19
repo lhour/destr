@@ -1,69 +1,73 @@
-# basic_elements_showcase · 场景基础元素陈列
+# basic_elements_showcase · 基础元素陈列（6 类）
 
 **Binary**: `cargo run --release --bin basic_elements_showcase`
 
 ## 效果预览
 
-三个元素（砖 / 水泥块 / 碎砖）按 X 轴排成一列，每块背后一张白底背板作参照：
+6 种元素从左到右排成一行：Brick → CementBlock → DebrisPiece → IrregularRock → ArchBrick → CurvedCylinderTrunk。
+每块元素后立一块 1.3×1.3 白底背板作参照物。
 
 ![showcase_shot](../../shots/basic_elements_showcase_shot.png)
 
-`--demo` 模式的控制台输出（含 API 一致性断言）：
+## 本轮新增（对照用户需求逐条）
+
+| # | 用户需求 | 实现位置 |
+|---|---|---|
+| 1 | **碎砖不该有边框** | [`DebrisPiece::default_image()`](../../src/elements.rs#L223-L233) 从 `brick_texture` 改成新增的 `debris_texture()`；新贴图是纯多尺度噪点 + 10% 随机小块暗斑，完全没有几何化砂浆/灰缝 |
+| 2 | **生成一些不规则石块** | `IrregularRock` 元素：`irregular_rock_mesh(size, seed)` 把立方体 8 顶点按 seed 做 ±18% 随机位移（[elements.rs L265-L329](../../src/elements.rs#L265-L329)）；贴图用冷岩色 `rock_texture()`（颗粒+四周稍暗，天然岩石感） |
+| 3 | **生成圆拱 / 圆柱的曲面砖块** | `ArchBrick` 元素：`arch_brick_mesh(r_outer, thick, arc_rad, height, slices)` 手搓一个楔形曲面砖（外弧圆柱面 + 内弧面 + 顶底 + 两端面，共 6 组面）；默认 30°/弧厚 0.4；想拼半圆拱就拿 12 块 `arc_rad = π/12` 的各自绕 +Y 轴旋转 `k·15°` 即可；想拼整圆柱就 `arc_rad = 2π/N` 绕一圈 |
+| 4 | **歪曲的圆柱做树干** | `CurvedCylinderTrunk` 元素：`curved_trunk_mesh(...)` 做 18×7 的分段圆柱，带锥度（底 0.30→顶 0.12）、半径 ±14% 顶点抖动、根部直立→顶部按抛物线 `curve=t·(2-t)` 弯到 `bend=(0.25, 0.15)`；贴图是纵向皴裂纹 `bark_texture()`，棕褐三档调色板；需要做小树林就 `CurvedCylinderTrunk::trunk_mesh(seed, bend)` 传不同 seed + bend |
+
+## 三个 Mesh 工厂（做 case 需要时直接调）
+
+```rust
+use destr::elements::{
+    arch_brick_mesh, curved_trunk_mesh, half_after_scale, irregular_rock_mesh,
+};
+
+// 一块 45°楔形砖（拱的更大片段），高 0.6，厚 0.5
+let wedge = arch_brick_mesh(
+    2.5,                      // 外半径
+    0.5,                      // 壁厚
+    std::f32::consts::PI / 4.0, // 45°
+    0.6,                      // 高度
+    10,                       // 弧度方向分片
+);
+
+// 一块更大/更小的自定义尺寸石块
+let big_boulder = irregular_rock_mesh(Vec3::new(1.6, 1.1, 1.4), 7);
+
+// 做一棵"朝 +Z 弯得更夸张、锥度更大"的树
+let bent_tree = curved_trunk_mesh(
+    4.5, 0.38, 0.08,   // 高/底径/顶径
+    24, 10,            // 径向/轴向分段（越高越要多）
+    Vec2::new(0.05, 0.9),
+    11,                // seed
+);
+```
+
+## Console 输出（--demo）
 
 ```
-· 标准砖         NAME=Brick           SIZE=(1.00, 0.50, 0.60)
-· 水泥块         NAME=CementBlock     SIZE=(1.00, 0.60, 0.60)
-· 碎砖(基准)      NAME=DebrisPiece     SIZE=(0.22, 0.22, 0.22)
-· Brick API 一致性 (SIZE↔get_length / get_length_x / get_width↔_x / get_size↔_length): ✓ PASS
+· 标准砖             NAME=Brick                   SIZE=(1.00, 0.50, 0.60)
+· 水泥块             NAME=CementBlock             SIZE=(1.00, 0.60, 0.60)
+· 碎砖(无边框)        NAME=DebrisPiece             SIZE=(0.22, 0.22, 0.22)
+· 不规则石块          NAME=IrregularRock           SIZE=(0.90, 0.75, 0.90)
+· 拱曲面楔形砖         NAME=ArchBrick               SIZE=(1.04, 0.50, 0.40)
+· 歪曲圆柱树干         NAME=CurvedCylinderTrunk     SIZE=(1.10, 3.00, 0.90)
+· 6 类 Element API 一致性: ✓ PASS
 ```
-
-## 它解决什么问题
-
-做搭场景 / 可破坏 / 大地图时，最忌讳的就是"用到 Brick 时查一下 BLOCK_W 常量，
-用到 Debris 时又凭记忆手写 0.22 这个数字，改一处忘了改另一处"。
-本仓库提供了 **`destr::elements::Element` trait**，把所有"基础建材"的参数全封装：
-
-- 尺寸（WIDTH / HEIGHT / DEPTH / SIZE）只写在一处
-- 想拿 `getLength(砖)` 这种实例级查询：有 `brick.get_length_x/y/z()` 和别名 `brick.get_width()/get_height()/get_depth()`
-- 默认 Mesh / 默认贴图 / 默认材质、三档调色板（带哈希选色）全部是 trait 关联项，一个 `Brick::xxx` 就够，现场不用拼写
-
-想新加入一种元素（路缘石、门槛石、瓦、…）？
-在 [`src/elements.rs`](../../src/elements.rs) 里照 `impl Element for CementBlock { ... }` 复制 15 行即可，**所有 case 立即能用**。
-
-## 核心文件
-
-| 文件 | 负责 |
-|---|---|
-| [`src/elements.rs`](../../src/elements.rs) | 核心：`Element` trait + `Brick` / `CementBlock` / `DebrisPiece` 三实现 + `half_after_scale` / `empty_triangle_mesh` 辅助 |
-| [`src/tex.rs`](../../src/tex.rs) | 新增 `cement_texture()`（混凝土面噪点 + 拼缝软阴影）|
-| [`src/cases/basic_elements_showcase.rs`](../../src/cases/basic_elements_showcase.rs) | 本 case 入口：排三个元素 + 背板 + --demo API 断言 |
-| [`src/common.rs`](../../src/common.rs) | 新增 `spawn_camera_at`（`spawn_default_camera` 的可配置版本） |
-
-## 为什么设计成 trait 而不是一个 struct
-
-两种写法你都能用（见仓库 README 的"基础元素库用法速览"）：
-
-1. **类型级常量**：`Brick::WIDTH`、`CementBlock::SIZE` —— 编译期展开，零开销。
-2. **实例方法**：先 `let b = Brick; b.get_length_x()` —— 适合"泛型函数统一处理 N 种元素"的场景，比如墙模块里 `<T as Element>::painted_mesh(...)` 调统一工厂。
-
-trait 方案的关键好处：**新元素加进来，不破坏任何使用 Element API 的 case**。
-比如 destructible_wall 里的 `WallAssets` 现在已经注册了 `cement_material`，
-之后你想做一个"水泥墙"case，只要把 `wall::build_chunk_mesh` 里的 `Brick::` 改成 `CementBlock::`，
-画面立刻从砖变混凝土——不用再跑去找贴图、调色板、mesh 尺寸。
 
 ## 运行方式
 
 ```bash
-# 交互查看
 cargo run --release --bin basic_elements_showcase
-
-# 演示模式（截图 + 打印尺寸 + 断言 API 一致 + 退出）
 cargo run --release --bin basic_elements_showcase -- --demo
-# → shots/basic_elements_showcase_shot.png
+# → 生成 shots/basic_elements_showcase_shot.png（6 元素全景）
 ```
 
-## 想继续扩展？建议顺序
+## 下一步建议
 
-1. 补新元素：`CurbStone`（路缘石） / `FloorTile1m`（1×1 地砖） / `RoofTile`（瓦片）
-2. 每个新元素在本 case 里追加一行 `ITEMS` + match 臂，自动进入陈列
-3. 下次新增 case 就从 `Element::default_material` 拉材质，不要再出现"手写 StandardMaterial 字段"的代码了
+- 做一个 **case #3：半圆拱门**，把 12 块 ArchBrick 拼起来 + 两侧用 Brick 砌支座，能展示"曲面砖作为构造单元"；
+- 做一个 **case #4：废墟乱石堆**，撒 N 个不同 seed 的 IrregularRock，底下散一批 DebrisPiece 当碎渣；
+- 做一个 **case #5：小树林**，一行 N 个不同 seed + bend 的 CurvedCylinderTrunk，底部塞几块 IrregularRock 当树根石。

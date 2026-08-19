@@ -38,7 +38,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
 use crate::common::{flip_uv, tint};
-use crate::tex::{brick_texture, cement_texture, hash2};
+use crate::tex::{bark_texture, brick_texture, cement_texture, debris_texture, hash2, rock_texture};
 
 // ── 统一尺寸类型：X=宽/Length，Y=高/Height，Z=厚/Depth ─────────────
 //
@@ -228,7 +228,8 @@ impl Element for DebrisPiece {
     // 偏脏的中灰色（碎片颜色偏一致，不然太跳）
     const PALETTE: [u32; 3] = [0xa5a195, 0x85817a, 0x66625c];
 
-    fn default_image() -> Image { brick_texture() } // 碎砖纹理复用砖面，缩放时已经够脏
+    // ✅ 用户要求"碎砖不该有边框"：不再复用 brick_texture（带灰缝），改用 debris_texture（纯噪点）
+    fn default_image() -> Image { debris_texture() }
 }
 
 // ── 自由函数：给定 (尺寸 × 缩放) 算 half-extent ────────────────────
@@ -249,4 +250,429 @@ pub fn empty_triangle_mesh() -> Mesh {
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
     m.insert_indices(Indices::U32(vec![]));
     m
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  工具：手搓 3 种非立方 Mesh（不规则石块 / 拱曲面砖 / 歪曲圆柱树干）
+// ═════════════════════════════════════════════════════════════════════════
+
+// 策略：每个工具返回"ATTRIBUTE_POSITION / NORMAL / UV / INDICES 四件套齐全"的 Mesh，
+// 这样即便 base_mesh 不走 Cuboid，default_material/painted_mesh 也能直接用（因为
+// painted_mesh 只会做"UV flip / translate / tint"，不依赖输入网格的拓扑）。
+
+// ---------- 工具 1：不规则石块（立方体 8 顶点抖动 + 6 面 2 tris / 面）-----------
+
+/// 构造一个边长 1 的"抖动立方体"多面体 mesh。
+///
+/// - 8 个顶点每个都加一个 seed 决定的随机位移（displace ~18% 的 half-extent，
+///   保持对称中心仍在原点，所以 SIZE 作为 AABB 仍然靠谱）。
+/// - 6 个面每个 2 个三角，共 36 个顶点位置（每个面独立顶点 = 平面法线硬边，石头切面更锐利）。
+pub fn irregular_rock_mesh(size: Vec3, seed: i32) -> Mesh {
+    let h = size * 0.5;
+    // 8 个角点：按 corner_idx → hash 算出位移向量
+    let mut corners: [Vec3; 8] = [Vec3::ZERO; 8];
+    for i in 0..8 {
+        let cx = ((i & 1) as f32) * 2.0 - 1.0;   // ±1
+        let cy = (((i >> 1) & 1) as f32) * 2.0 - 1.0;
+        let cz = (((i >> 2) & 1) as f32) * 2.0 - 1.0;
+        let base = Vec3::new(h.x * cx, h.y * cy, h.z * cz);
+        let dx = (hash2(i as i32 + seed * 101, 123) - 0.5) * h.x * 0.36;
+        let dy = (hash2(i as i32, 7 + seed * 53) - 0.5) * h.y * 0.36;
+        let dz = (hash2(i as i32, seed * 17 - 31) - 0.5) * h.z * 0.36;
+        corners[i] = base + Vec3::new(dx, dy, dz);
+    }
+    // 6 个面：每个面按"从面外看逆时针"的顺序 4 顶点
+    //   索引顺序：corner_index = |bit0 x| bit1 y| bit2 z|  （和上面写的相同）
+    //   右手法则：法线朝外
+    let faces: [[usize; 4]; 6] = [
+        // +X (x=1 面): (1,0,0)->(1,1,0)->(1,1,1)->(1,0,1)   右手法则 → +X
+        [1, 3, 7, 5],
+        // -X
+        [0, 4, 6, 2],
+        // +Y
+        [2, 6, 7, 3],
+        // -Y
+        [0, 1, 5, 4],
+        // +Z
+        [4, 5, 7, 6],
+        // -Z
+        [0, 2, 3, 1],
+    ];
+    let face_normals: [Vec3; 6] = [
+        Vec3::X, -Vec3::X, Vec3::Y, -Vec3::Y, Vec3::Z, -Vec3::Z,
+    ];
+
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(6 * 4);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(6 * 4);
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(6 * 4);
+    let mut indices: Vec<u32> = Vec::with_capacity(6 * 6);
+
+    for (f, face) in faces.iter().enumerate() {
+        let base = positions.len() as u32;
+        // 4 个 UV 角
+        let quad_uv: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        for (k, &c) in face.iter().enumerate() {
+            positions.push(corners[c].into());
+            normals.push(face_normals[f].into());
+            uvs.push(quad_uv[k]);
+        }
+        indices.push(base); indices.push(base + 1); indices.push(base + 2);
+        indices.push(base); indices.push(base + 2); indices.push(base + 3);
+    }
+
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL,   normals);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0,     uvs);
+    m.insert_indices(Indices::U32(indices));
+    m
+}
+
+// ---------- 工具 2：拱曲面楔形砖（拼圆拱/圆柱曲面的基本单元）-----------
+
+/// 一个弧度为 `arc_rad`、厚度 `thick`、轴向高度 `height` 的弧形砖（楔形截面）。
+///
+/// 空间约定：
+///   - 曲面在 **XZ 平面**弯曲（所以一整条拱向上就是 Y 为高度，XZ 平面做拱曲线）。
+///   - 外半径 `r_outer`，内半径 `r_outer - thick`。
+///   - 径向范围：`[-arc_rad/2, arc_rad/2]`（绕 +Y 轴），元素中心在原点处。
+///   - 高度（Y 方向，沿拱的柱轴）=`height`，中心 ±height/2。
+///
+/// 用它拼拱：N 块并列，每块 `arc_rad = π/N`，首尾接起来就是半圆拱。
+/// 用它拼圆柱：每块 `arc_rad = 2π/N`，绕一圈接起来。
+pub fn arch_brick_mesh(r_outer: f32, thick: f32, arc_rad: f32, height: f32, slices: u32) -> Mesh {
+    let r_inner = (r_outer - thick).max(0.001);
+    let h = height * 0.5;
+    let slices = slices.max(2);
+
+    // 一个"横截面（XZ 平面）"有 2 × (slices+1) 顶点：
+    //   第 0 行 = inner 半径上圆弧顶点（i from 0..=slices）
+    //   第 1 行 = outer 半径上圆弧顶点
+    // 然后每个 slice 有 4 个侧（前/后/内/外）+ 两个端面，共 6 组面。
+    let mut positions: Vec<[f32; 3]> = Vec::new();
+    let mut normals: Vec<[f32; 3]> = Vec::new();
+    let mut uvs: Vec<[f32; 2]> = Vec::new();
+    let mut indices: Vec<u32> = Vec::new();
+
+    // 预先算每段的角度坐标
+    let theta = |i: u32| -> f32 {
+        let t = i as f32 / slices as f32;   // 0..=1
+        -arc_rad * 0.5 + arc_rad * t
+    };
+
+    // ── 侧面 1：外弧圆柱面（最重要的"曲面"）───────────────
+    let outer_start = positions.len() as u32;
+    for i in 0..=slices {
+        let a = theta(i);
+        let (s, c) = a.sin_cos();
+        // X = sin*r, Z = cos*r（保证正前方 +Z 是 θ=0 方向）
+        let px = r_outer * s;
+        let pz = r_outer * c;
+        // 下点、上点
+        positions.push([px, -h, pz]);
+        positions.push([px,  h, pz]);
+        // 法线（径向向外）
+        let nx = s;
+        let nz = c;
+        normals.push([nx, 0.0, nz]);
+        normals.push([nx, 0.0, nz]);
+        // UV：u = 0..1 (θ 方向)，v = 0..1 (高度)
+        let u = i as f32 / slices as f32;
+        uvs.push([u, 0.0]);
+        uvs.push([u, 1.0]);
+    }
+    for i in 0..slices {
+        let base = outer_start + (i * 2) as u32;
+        indices.push(base); indices.push(base + 1); indices.push(base + 3);
+        indices.push(base); indices.push(base + 3); indices.push(base + 2);
+    }
+
+    // ── 侧面 2：内弧圆柱面（法线朝内）───────────────
+    let inner_start = positions.len() as u32;
+    for i in 0..=slices {
+        let a = theta(i);
+        let (s, c) = a.sin_cos();
+        let px = r_inner * s;
+        let pz = r_inner * c;
+        positions.push([px, -h, pz]);
+        positions.push([px,  h, pz]);
+        // 法线：朝内（-径向）
+        normals.push([-s, 0.0, -c]);
+        normals.push([-s, 0.0, -c]);
+        let u = i as f32 / slices as f32;
+        uvs.push([u, 0.0]);
+        uvs.push([u, 1.0]);
+    }
+    for i in 0..slices {
+        // 注意 winding 反向
+        let base = inner_start + (i * 2) as u32;
+        indices.push(base); indices.push(base + 2); indices.push(base + 3);
+        indices.push(base); indices.push(base + 3); indices.push(base + 1);
+    }
+
+    // ── 顶部面（Y=+h）───────────────
+    let top_start = positions.len() as u32;
+    for i in 0..=slices {
+        let a = theta(i);
+        let (s, c) = a.sin_cos();
+        positions.push([r_inner * s, h, r_inner * c]);
+        positions.push([r_outer * s, h, r_outer * c]);
+        normals.push([0.0, 1.0, 0.0]);
+        normals.push([0.0, 1.0, 0.0]);
+        let u = i as f32 / slices as f32;
+        uvs.push([u, 0.0]);
+        uvs.push([u, 1.0]);
+    }
+    for i in 0..slices {
+        let base = top_start + (i * 2) as u32;
+        indices.push(base); indices.push(base + 1); indices.push(base + 3);
+        indices.push(base); indices.push(base + 3); indices.push(base + 2);
+    }
+
+    // ── 底部面（Y=-h）───────────────
+    let bot_start = positions.len() as u32;
+    for i in 0..=slices {
+        let a = theta(i);
+        let (s, c) = a.sin_cos();
+        positions.push([r_inner * s, -h, r_inner * c]);
+        positions.push([r_outer * s, -h, r_outer * c]);
+        normals.push([0.0, -1.0, 0.0]);
+        normals.push([0.0, -1.0, 0.0]);
+        let u = i as f32 / slices as f32;
+        uvs.push([u, 0.0]);
+        uvs.push([u, 1.0]);
+    }
+    for i in 0..slices {
+        let base = bot_start + (i * 2) as u32;
+        indices.push(base); indices.push(base + 2); indices.push(base + 3);
+        indices.push(base); indices.push(base + 3); indices.push(base + 1);
+    }
+
+    // ── 端面（θ = -arc/2 和 +arc/2，两个梯形）───────────────
+    // 端面 1：θ = -arc/2
+    let end1_start = positions.len() as u32;
+    let a0 = theta(0);
+    let (s0, c0) = a0.sin_cos();
+    // 从端面"外"看的逆时针顺序（法线朝 -π/2 方向）
+    let n1 = Vec3::new(-c0, 0.0, s0); // 法向：θ 减小方向
+    for (r, v) in [(r_inner, -h), (r_outer, -h), (r_outer, h), (r_inner, h)] {
+        positions.push([r * s0, v, r * c0]);
+        normals.push(n1.into());
+    }
+    uvs.push([0.0, 0.0]); uvs.push([1.0, 0.0]); uvs.push([1.0, 1.0]); uvs.push([0.0, 1.0]);
+    indices.push(end1_start); indices.push(end1_start + 1); indices.push(end1_start + 2);
+    indices.push(end1_start); indices.push(end1_start + 2); indices.push(end1_start + 3);
+
+    // 端面 2：θ = +arc/2
+    let end2_start = positions.len() as u32;
+    let a1 = theta(slices);
+    let (s1, c1) = a1.sin_cos();
+    let n2 = Vec3::new(c1, 0.0, -s1); // 法向：θ 增大方向
+    for (r, v) in [(r_inner, -h), (r_inner, h), (r_outer, h), (r_outer, -h)] {
+        positions.push([r * s1, v, r * c1]);
+        normals.push(n2.into());
+    }
+    uvs.push([0.0, 0.0]); uvs.push([0.0, 1.0]); uvs.push([1.0, 1.0]); uvs.push([1.0, 0.0]);
+    indices.push(end2_start); indices.push(end2_start + 1); indices.push(end2_start + 2);
+    indices.push(end2_start); indices.push(end2_start + 2); indices.push(end2_start + 3);
+
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL,   normals);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0,     uvs);
+    m.insert_indices(Indices::U32(indices));
+    m
+}
+
+// ---------- 工具 3：歪曲圆柱（树干）-----------
+
+/// 构造一个"沿 Y 轴向上的分段圆柱，每圈半径不同 + 顶点径向抖动 + 整体弯向 (X,Z) 曲线"。
+///
+/// 参数：
+///   - height：整体高度（Y 向）
+///   - base_radius：根部半径
+///   - tip_radius：  顶部半径（一般 < base_radius，模拟锥度）
+///   - radial_slices：圆周方向分片数（18 起步比较圆）
+///   - vertical_slices：高度方向分段数（6 起步）
+///   - bend：整体弯曲方向的"最大偏移向量"（XZ 平面，只影响 X/Z 位置，不影响高度）
+///   - seed：顶点扰动种子（0..seed 变化时每棵树形状不同）
+pub fn curved_trunk_mesh(
+    height: f32,
+    base_radius: f32,
+    tip_radius: f32,
+    radial_slices: u32,
+    vertical_slices: u32,
+    bend: Vec2,
+    seed: i32,
+) -> Mesh {
+    let rs = radial_slices.max(4);
+    let vs = vertical_slices.max(2);
+
+    let mut positions: Vec<[f32; 3]> = Vec::with_capacity(((rs + 1) * (vs + 1)) as usize);
+    let mut normals: Vec<[f32; 3]> = Vec::with_capacity(positions.capacity());
+    let mut uvs: Vec<[f32; 2]> = Vec::with_capacity(positions.capacity());
+    let mut indices: Vec<u32> = Vec::with_capacity((rs * vs * 6) as usize);
+
+    for j in 0..=vs {
+        let t = j as f32 / vs as f32;           // 0..=1（底→顶）
+        // 弯曲抛物线：t*2(2-t) = 2t - t^2 让根部不弯曲、顶部弯到最厉害
+        let curve = t * (2.0 - t);
+        let offset_x = bend.x * curve;
+        let offset_z = bend.y * curve;
+        let radius = base_radius.lerp(tip_radius, t);
+        for i in 0..=rs {
+            let a = (i as f32 / rs as f32) * std::f32::consts::TAU;
+            let (s, c) = a.sin_cos();
+            // 顶点扰动：再给半径加一点 ±10% 高频抖动 + 一点低频
+            let k1 = hash2(i as i32, j as i32 + seed);
+            let k2 = hash2(i as i32 / 3, (j as i32).wrapping_mul(17).wrapping_add(seed));
+            let jitter = (k1 - 0.5) * 0.18 + (k2 - 0.5) * 0.10;
+            let r = radius * (1.0 + jitter);
+            let px = c * r + offset_x;
+            let pz = s * r + offset_z;
+            let py = t * height; // 0..height（原点在底部中心；方便放地上时 translate_y 不动）
+            positions.push([px, py, pz]);
+            // 近似法线（忽略弯曲对法线的影响，够用）
+            normals.push([c, 0.0, s]);
+            // UV：u = 绕一圈 (0..1)，v = 高度 (0..1)
+            uvs.push([i as f32 / rs as f32, t]);
+        }
+    }
+
+    // 四边形网格 → 两三角
+    for j in 0..vs {
+        for i in 0..rs {
+            let a = (j * (rs + 1) + i) as u32;
+            let b = a + 1;
+            let cc = a + (rs + 1) as u32;
+            let d = cc + 1;
+            indices.push(a); indices.push(cc); indices.push(d);
+            indices.push(a); indices.push(d); indices.push(b);
+        }
+    }
+
+    let mut m = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    m.insert_attribute(Mesh::ATTRIBUTE_NORMAL,   normals);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_0,     uvs);
+    m.insert_indices(Indices::U32(indices));
+    m
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Element 4: IrregularRock（不规则石块）
+// ═════════════════════════════════════════════════════════════════════════
+
+/// 天然不规则石块：抖动顶点的多面体，默认 0.9 × 0.75 × 0.9（稍扁的河卵石感）。
+///
+/// base_mesh 固定 seed=0 保证"陈列时每次长一样"。
+/// 要在场景里撒一堆不同形状，用 `<IrregularRock as Element>::rock_mesh(seed)` 自己传 seed。
+#[derive(Debug, Default, Copy, Clone)]
+pub struct IrregularRock;
+
+impl IrregularRock {
+    /// 按种子生成一块"同尺寸、不同形状"的石块 mesh。
+    pub fn rock_mesh(seed: i32) -> Mesh { irregular_rock_mesh(Self::SIZE, seed) }
+}
+
+impl Element for IrregularRock {
+    const WIDTH:  f32 = 0.90;
+    const HEIGHT: f32 = 0.75;
+    const DEPTH:  f32 = 0.90;
+    const NAME: &'static str = "IrregularRock";
+    // 冷灰岩石三档
+    const PALETTE: [u32; 3] = [0x9da6ae, 0x6f7880, 0x4a5258];
+
+    fn base_mesh() -> Mesh { irregular_rock_mesh(Self::SIZE, 0) }
+    fn default_image() -> Image { rock_texture() }
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Element 5: ArchBrick（拱曲面楔形砖）
+// ═════════════════════════════════════════════════════════════════════════
+
+/// 拱/圆柱曲面用的楔形砖。
+///
+/// 默认配置（一块放陈列能看到弧度即可）：
+///   - 外半径 2.0，厚 0.4，弧 30° = π/6，高 0.5，径向 8 分片。
+///   - AABB SIZE：约 (2.0·2·sin(π/12) = 1.035) × 0.5 × 0.4。
+///
+/// 想搭半圆拱？拿 12 块每块 15°（π/12），每块绕原点旋转 +k·15° 即可。
+#[derive(Debug, Default, Copy, Clone)]
+pub struct ArchBrick;
+
+impl ArchBrick {
+    pub const R_OUTER:  f32 = 2.0;
+    pub const THICK:    f32 = 0.4;
+    pub const ARC_RAD:  f32 = std::f32::consts::PI / 6.0; // 30°
+    pub const SLICES:   u32 = 8;
+}
+
+impl Element for ArchBrick {
+    // AABB 估算：2·R·sin(arc/2) ≈ 2·2·sin(15°) ≈ 2·2·0.2588 ≈ 1.0353
+    // 这里 sin() 不是 const fn，直接写死提前算好的常数值（保留 6 位小数）。
+    const WIDTH:  f32 = 1.035_276;
+    const HEIGHT: f32 = 0.5;
+    const DEPTH:  f32 = ArchBrick::THICK;
+    const NAME: &'static str = "ArchBrick";
+    // 带暖调的橙黄砂砖（拱门常见）
+    const PALETTE: [u32; 3] = [0xd9b47a, 0xb99060, 0x8a6a44];
+
+    fn base_mesh() -> Mesh {
+        arch_brick_mesh(Self::R_OUTER, Self::THICK, Self::ARC_RAD, Self::HEIGHT, Self::SLICES)
+    }
+    fn default_image() -> Image { brick_texture() } // 拱曲面也用砖面
+}
+
+// ═════════════════════════════════════════════════════════════════════════
+//  Element 6: CurvedCylinderTrunk（歪曲圆柱 / 树干）
+// ═════════════════════════════════════════════════════════════════════════
+
+/// 一棵"歪"树的树干：带锥度 + 顶点扰动 + 整体向一个方向弯。
+///
+/// 默认配置：
+///   - 高 3.0，底部半径 0.3，顶部 0.12，
+///   - 径向 18 片，轴向 7 段，
+///   - 弯曲方向 (0.25, 0.15)（向右前方略微偏）。
+///
+/// SIZE 给出 AABB 估：(底径 + 2·bend.x) × 高 × (底径 + 2·bend.y)
+#[derive(Debug, Default, Copy, Clone)]
+pub struct CurvedCylinderTrunk;
+
+impl CurvedCylinderTrunk {
+    pub const HEIGHT:        f32  = 3.0;
+    pub const BASE_RADIUS:   f32  = 0.30;
+    pub const TIP_RADIUS:    f32  = 0.12;
+    pub const RADIAL_SLICES: u32  = 18;
+    pub const VERT_SLICES:   u32  = 7;
+    pub const BEND:          Vec2 = Vec2::new(0.25, 0.15);
+    pub const SEED:          i32  = 0;
+
+    /// 按自定义种子+弯曲量再生成一棵（做小树林不重复）。
+    pub fn trunk_mesh(seed: i32, bend: Vec2) -> Mesh {
+        curved_trunk_mesh(
+            Self::HEIGHT, Self::BASE_RADIUS, Self::TIP_RADIUS,
+            Self::RADIAL_SLICES, Self::VERT_SLICES,
+            bend, seed,
+        )
+    }
+}
+
+impl Element for CurvedCylinderTrunk {
+    // 尺寸估：让 AABB 包住底径 + 最大弯曲偏移
+    const WIDTH:  f32 = CurvedCylinderTrunk::BASE_RADIUS * 2.0 + CurvedCylinderTrunk::BEND.x.abs() * 2.0;
+    const HEIGHT: f32 = CurvedCylinderTrunk::HEIGHT;
+    const DEPTH:  f32 = CurvedCylinderTrunk::BASE_RADIUS * 2.0 + CurvedCylinderTrunk::BEND.y.abs() * 2.0;
+    const NAME: &'static str = "CurvedCylinderTrunk";
+    // 树皮棕褐色三档
+    const PALETTE: [u32; 3] = [0x7a5c3f, 0x5c4430, 0x3f2f22];
+
+    fn base_mesh() -> Mesh {
+        curved_trunk_mesh(
+            Self::HEIGHT, Self::BASE_RADIUS, Self::TIP_RADIUS,
+            Self::RADIAL_SLICES, Self::VERT_SLICES,
+            Self::BEND, Self::SEED,
+        )
+    }
+    fn default_image() -> Image { bark_texture() }
 }
