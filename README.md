@@ -25,10 +25,12 @@ cargo run --release --bin destructible_wall -- --demo
 | # | Binary | 效果 | 关键技术点 |
 |---|---|---|---|
 | 01 | `destructible_wall` | 可破坏砖墙（左键打洞，碎砖掉落） | 体素数据层、Chunk 网格重建、消息解耦、程序化贴图边框、碎砖手写物理 |
+| 02 | `basic_elements_showcase` | 场景基础元素陈列（砖 / 水泥块 / 碎砖 排成一列） | `destr::elements::Element` trait、尺寸 API 封装、默认材质/贴图工厂 |
 
 每个 case 自己的说明请点目录：
 
 - [cases/destructible_wall/README.md](cases/destructible_wall/README.md)
+- [cases/basic_elements_showcase/README.md](cases/basic_elements_showcase/README.md)
 
 ## 共享库（`destr::*`）
 
@@ -37,9 +39,36 @@ cargo run --release --bin destructible_wall -- --demo
 
 | 模块 | 用途 |
 |---|---|
-| [`destr::common`](src/common.rs) | `add_default_plugins` / `spawn_sun` / `spawn_default_camera` / `spawn_ground` / `plain_material` / 网格工具 `merge_flat` `tint` `flip_uv` |
+| [`destr::common`](src/common.rs) | `add_default_plugins` / `spawn_sun` / `spawn_default_camera` / `spawn_camera_at` / `spawn_ground` / `plain_material` / 网格工具 `merge_flat` `tint` `flip_uv` |
 | [`destr::demo`](src/demo.rs) | `DemoDriver` 资源 / `request_screenshot` / `request_exit`（`--demo` 模式约定） |
-| [`destr::tex`](src/tex.rs) | `brick_texture()`、`hash2()` 等程序化纹理工具 |
+| [`destr::tex`](src/tex.rs) | `brick_texture()` / `cement_texture()` / `hash2()` 等程序化纹理工具 |
+| [`destr::elements`](src/elements.rs) | **场景基础元素库**：`Element` trait + `Brick` / `CementBlock` / `DebrisPiece` 三实现，尺寸 API / 默认 Mesh / 默认材质工厂 |
+
+### 基础元素库用法速览
+
+```rust
+use destr::elements::{Brick, CementBlock, DebrisPiece, Element};
+
+// 方式一：类型级常量（编译器已知，零开销）
+let (w, h, d) = (Brick::WIDTH, Brick::HEIGHT, Brick::DEPTH); // (1.00, 0.50, 0.60)
+let palette = CementBlock::PALETTE;  // 冷灰三档色
+let s: Vec3 = DebrisPiece::SIZE;     // (0.22, 0.22, 0.22)
+
+// 方式二：实例方法（像用户说的"getLength(砖)"）
+let b = Brick;
+assert_eq!(b.get_length_x(), 1.0);
+assert_eq!(b.get_length_y(), 0.5);
+assert_eq!(b.get_length_z(), 0.6);
+assert_eq!(b.get_length(), Brick::SIZE);      // 三维合一
+assert_eq!(b.get_width(),  b.get_length_x()); // 别名等价（宽/高/深 ↔ 三个轴）
+assert_eq!(b.get_height(), b.get_length_y());
+assert_eq!(b.get_depth(),  b.get_length_z());
+
+// 方式三：直接拿 Mesh / 贴图 / 材质，**不再手拼 StandardMaterial 字段**
+let mesh: Mesh = Brick::base_mesh();
+let painted_mesh = Brick::painted_mesh(x, y, c, 0, center, true); // 含选色 + UV镜像
+let material = Brick::default_material(&mut materials, &mut images, Color::WHITE, 0.95);
+```
 
 ## 统一约定（新建 case 前必读）
 

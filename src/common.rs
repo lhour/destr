@@ -51,11 +51,17 @@ pub fn spawn_sun(commands: &mut Commands) {
 }
 
 /// 3/4 透视观察相机：看 (0, 2, 0) 正前方。
-/// 对于尺寸特殊的场景，case 自己再加一个相机即可。
 pub fn spawn_default_camera(commands: &mut Commands) {
+    spawn_camera_at(commands, Vec3::new(9.0, 4.5, 14.0), Vec3::new(0.0, 2.0, 0.0));
+}
+
+/// 3/4 透视观察相机（自定义眼点 / 看向目标）。
+///
+/// 典型用例：展示小型陈列场景时把相机拉近；展示大墙场景时拉远。
+pub fn spawn_camera_at(commands: &mut Commands, eye: Vec3, look_at: Vec3) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(9.0, 4.5, 14.0).looking_at(Vec3::new(0.0, 2.0, 0.0), Vec3::Y),
+        Transform::from_translation(eye).looking_at(look_at, Vec3::Y),
         bevy::render::view::Hdr,
     ));
 }

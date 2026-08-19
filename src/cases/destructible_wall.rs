@@ -22,7 +22,7 @@ use destr::common::{
     add_default_plugins, plain_material, spawn_default_camera, spawn_ground, spawn_sun,
 };
 use destr::demo::{request_exit, request_screenshot, DemoDriver};
-use destr::tex::brick_texture;
+use destr::elements::{half_after_scale, Brick, CementBlock, DebrisPiece, Element};
 
 use self::wall::WallData;
 
@@ -69,9 +69,13 @@ struct WallChunk {
     cy: usize,
 }
 
+/// 所有材质句柄集中在这里：砖 / 水泥 / 碎砖（未来扩展直接加字段）。
+/// 每种元素的 Mesh / 贴图 / 材质都走 Element trait 工厂，不用现场拼写参数。
 #[derive(Resource)]
 struct WallAssets {
     brick_material: Handle<StandardMaterial>,
+    #[allow(dead_code)]
+    cement_material: Handle<StandardMaterial>,
     debris_mesh: Handle<Mesh>,
 }
 
@@ -90,21 +94,19 @@ fn setup(
     spawn_ground(&mut commands, &mut meshes, plain.clone());
     spawn_default_camera(&mut commands);
 
-    // 砖面材质：共用一张程序化贴图 × 每砖顶点色
-    let tex = images.add(brick_texture());
-    let brick_mat = materials.add(StandardMaterial {
-        base_color: Color::WHITE,
-        base_color_texture: Some(tex),
-        perceptual_roughness: 0.95,
-        ..default()
-    });
+    // ✅ 砖 / 水泥 / 碎砖：**全部用 Element trait 的 default_material 工厂**
+    //    以后想调 roughness / 颜色只需改一个入参，不用再拼 StandardMaterial 字段。
+    let brick_mat  = <Brick       as Element>::default_material(&mut materials, &mut images, Color::WHITE, 0.95);
+    let cement_mat = <CementBlock as Element>::default_material(&mut materials, &mut images, Color::WHITE, 0.92);
 
-    // 碎砖 mesh（一个小方块 × 中档石色）
-    let mut debris_mesh = Cuboid::new(0.22, 0.22, 0.22).mesh().build();
-    let n = debris_mesh.count_vertices();
-    debris_mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.62, 0.60, 0.55, 1.0]; n]);
-    let debris_mesh = meshes.add(debris_mesh);
-    commands.insert_resource(WallAssets { brick_material: brick_mat.clone(), debris_mesh });
+    // ✅ 碎砖 mesh：走 DebrisPiece::base_mesh()，尺寸以后改 DebrisPiece::SIZE 全局生效。
+    let debris_mesh = meshes.add(<DebrisPiece as Element>::base_mesh());
+
+    commands.insert_resource(WallAssets {
+        brick_material: brick_mat.clone(),
+        cement_material: cement_mat,
+        debris_mesh,
+    });
 
     // 墙：每块 chunk 一个实体。3×2 = 6 个 draw call 撑起整面墙。
     for cy in 0..wall::chunks_y() {
@@ -226,15 +228,19 @@ fn debris_physics(
     mut commands: Commands,
 ) {
     let dt = time.delta_secs();
+    // 所有掉落物统一按 DebrisPiece 元素的 half-extent 算地面碰撞。
+    // 以后改碎砖基准尺寸，只改 DebrisPiece 的常量即可，不用再手改这里的 0.22。
+    let piece_size = DebrisPiece::SIZE;
     for (e, mut tf, mut d) in &mut q {
         d.velocity.y -= 15.0 * dt;
         tf.translation += d.velocity * dt;
         tf.rotate_x(d.angvel.x * dt);
         tf.rotate_y(d.angvel.y * dt);
         tf.rotate_z(d.angvel.z * dt);
-        let half = 0.22 * tf.scale.x * 0.5;
-        if tf.translation.y < half && d.velocity.y < 0.0 {
-            tf.translation.y = half;
+        let half = half_after_scale(piece_size, tf.scale);
+        let half_y = half.y;
+        if tf.translation.y < half_y && d.velocity.y < 0.0 {
+            tf.translation.y = half_y;
             if d.velocity.y < -3.0 {
                 d.velocity.y = -d.velocity.y * 0.35;
                 d.velocity.x *= 0.6;

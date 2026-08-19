@@ -16,6 +16,11 @@ path = "src/lib.rs"
 name = "destructible_wall"
 path = "src/cases/destructible_wall.rs"
 
+# Case 02: 场景基础元素陈列
+[[bin]]
+name = "basic_elements_showcase"
+path = "src/cases/basic_elements_showcase.rs"
+
 [dependencies]
 bevy = { version = "0.18", default-features = true }
 

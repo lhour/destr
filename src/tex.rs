@@ -63,3 +63,38 @@ pub fn brick_texture() -> Image {
         RenderAssetUsages::default(),
     )
 }
+
+// ── 水泥面贴图：无砂浆，颗粒粗、带大起伏 ─────────────────────────────
+//
+// 和砖面贴图一样是"亮度 mask"，用于顶点色 × 贴图的乘法着色。
+// 特性：四边 0.5% 的软阴影（让相邻混凝土块之间有"拼缝阴影"感），
+//       主体用高频 + 低频噪点卷积模拟骨料颗粒。
+
+pub fn cement_texture() -> Image {
+    const S: u32 = 256;
+    let mut data = Vec::with_capacity((S * S * 4) as usize);
+    for py in 0..S {
+        for px in 0..S {
+            // 拼缝软阴影：四边到中心的距离按 6% 衰减
+            let du = (px as f32 / S as f32).min(1.0 - px as f32 / S as f32);
+            let dv = (py as f32 / S as f32).min(1.0 - py as f32 / S as f32);
+            let edge = (du.min(dv) / 0.06).clamp(0.0, 1.0);
+            let shadow = 0.82 + 0.18 * edge;
+            // 主体：三档频率混合的噪点，模拟水泥 + 骨料 + 砂
+            let n1 = (hash2(px as i32,        py as i32)        - 0.5) * 0.10;
+            let n2 = (hash2(px as i32 / 3,    py as i32 / 3)    - 0.5) * 0.12;
+            let n3 = (hash2(px as i32 / 19,   py as i32 / 17)   - 0.5) * 0.08;
+            let base = 0.80 + n1 + n2 + n3;
+            let lum = base * shadow;
+            let b = (lum.clamp(0.0, 1.0) * 255.0) as u8;
+            data.extend_from_slice(&[b, b, b, 255]);
+        }
+    }
+    Image::new(
+        Extent3d { width: S, height: S, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    )
+}
